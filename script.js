@@ -3,9 +3,11 @@ const chatForm = document.getElementById("chatForm");
 const userInput = document.getElementById("userInput");
 const chatWindow = document.getElementById("chatWindow");
 const sendBtn = document.getElementById("sendBtn");
+const CHAT_HISTORY_KEY = "loreal-chat-history";
 
 /* OpenAI settings */
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const WORKER_URL = "https://lorealproject.wyattschaub.workers.dev/";
 
 // This system prompt keeps the assistant focused on L'Oréal topics only.
 const systemPrompt = `You are a helpful L'Oreal beauty advisor.
@@ -22,26 +24,72 @@ const messages = [
 ];
 
 // Helper: add one message bubble to the chat window.
-function addMessage(role, content) {
+function addMessage(role, content, shouldScrollToBottom = true) {
   const messageDiv = document.createElement("div");
   messageDiv.classList.add("msg", role);
-
-  // Friendly labels to make messages clearer for beginners.
-  if (role === "user") {
-    messageDiv.textContent = `You: ${content}`;
-  } else {
-    messageDiv.textContent = `Advisor: ${content}`;
-  }
+  messageDiv.textContent = content;
 
   chatWindow.appendChild(messageDiv);
-  chatWindow.scrollTop = chatWindow.scrollHeight;
+
+  if (shouldScrollToBottom) {
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+  }
+
+  return messageDiv;
 }
 
-// Starter greeting from the assistant.
-addMessage(
-  "ai",
-  "Hello. Ask me about L'Oreal products, routines, and recommendations.",
-);
+// Keep the latest user question pinned at the top of the visible chat box.
+function pinMessageToTop(messageElement) {
+  requestAnimationFrame(() => {
+    const containerTop = chatWindow.getBoundingClientRect().top;
+    const messageTop = messageElement.getBoundingClientRect().top;
+    const offsetWithinContainer = messageTop - containerTop;
+    chatWindow.scrollTop += offsetWithinContainer;
+  });
+}
+
+// Save only user/assistant turns, not the system instruction.
+function saveChatHistory() {
+  const chatTurns = messages.filter((message) => message.role !== "system");
+  localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(chatTurns));
+}
+
+// Load previous turns so the conversation context is preserved across refreshes.
+function loadChatHistory() {
+  try {
+    const rawHistory = localStorage.getItem(CHAT_HISTORY_KEY);
+    if (!rawHistory) return [];
+
+    const parsedHistory = JSON.parse(rawHistory);
+    if (!Array.isArray(parsedHistory)) return [];
+
+    return parsedHistory.filter(
+      (turn) =>
+        (turn.role === "user" || turn.role === "assistant") &&
+        typeof turn.content === "string",
+    );
+  } catch (error) {
+    console.error("Could not load saved chat history:", error);
+    return [];
+  }
+}
+
+const savedTurns = loadChatHistory();
+
+if (savedTurns.length > 0) {
+  savedTurns.forEach((turn) => {
+    messages.push(turn);
+    addMessage(turn.role === "assistant" ? "ai" : "user", turn.content, false);
+  });
+
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+} else {
+  // Starter greeting from the assistant.
+  addMessage(
+    "ai",
+    "Hello. Ask me about L'Oreal products, routines, and recommendations.",
+  );
+}
 
 /* Handle form submit */
 chatForm.addEventListener("submit", async (e) => {
@@ -50,14 +98,17 @@ chatForm.addEventListener("submit", async (e) => {
   const userText = userInput.value.trim();
   if (!userText) return;
 
-  // Show user message in the UI.
-  addMessage("user", userText);
+  // Add newest question and keep it pinned at top of the visible chat box.
+  const userMessageElement = addMessage("user", userText, false);
+  const thinkingMessage = addMessage("ai", "Thinking...", false);
+  pinMessageToTop(userMessageElement);
 
   // Add user message to conversation history.
   messages.push({
     role: "user",
     content: userText,
   });
+  saveChatHistory();
 
   // Clear input and lock controls while waiting for the API.
   userInput.value = "";
@@ -65,16 +116,13 @@ chatForm.addEventListener("submit", async (e) => {
   sendBtn.disabled = true;
 
   try {
-    const response = await fetch(OPENAI_API_URL, {
+    const response = await fetch(WORKER_URL, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o",
         messages: messages,
-        max_completion_tokens: 300,
       }),
     });
 
@@ -84,7 +132,15 @@ chatForm.addEventListener("submit", async (e) => {
     if (!response.ok) {
       const apiError =
         data.error?.message || "Something went wrong with the API request.";
-      addMessage("ai", `Sorry, I could not complete that request. ${apiError}`);
+      const errorText = `Sorry, I could not complete that request. ${apiError}`;
+      thinkingMessage.textContent = errorText;
+
+      messages.push({
+        role: "assistant",
+        content: errorText,
+      });
+      saveChatHistory();
+      pinMessageToTop(userMessageElement);
       return;
     }
 
@@ -92,10 +148,16 @@ chatForm.addEventListener("submit", async (e) => {
     const aiText = data.choices?.[0]?.message?.content?.trim();
 
     if (!aiText) {
-      addMessage(
-        "ai",
-        "Sorry, I received an empty response. Please try again.",
-      );
+      const emptyText =
+        "Sorry, I received an empty response. Please try again.";
+      thinkingMessage.textContent = emptyText;
+
+      messages.push({
+        role: "assistant",
+        content: emptyText,
+      });
+      saveChatHistory();
+      pinMessageToTop(userMessageElement);
       return;
     }
 
@@ -104,13 +166,22 @@ chatForm.addEventListener("submit", async (e) => {
       role: "assistant",
       content: aiText,
     });
+    saveChatHistory();
 
-    addMessage("ai", aiText);
+    thinkingMessage.textContent = aiText;
+    pinMessageToTop(userMessageElement);
   } catch (error) {
-    addMessage(
-      "ai",
-      "Sorry, I could not connect to OpenAI. Please check your internet connection.",
-    );
+    const connectionError =
+      "Sorry, I could not connect to OpenAI. Please check your internet connection.";
+    thinkingMessage.textContent = connectionError;
+
+    messages.push({
+      role: "assistant",
+      content: connectionError,
+    });
+    saveChatHistory();
+    pinMessageToTop(userMessageElement);
+
     console.error("Request error:", error);
   } finally {
     sendBtn.disabled = false;
