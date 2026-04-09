@@ -24,6 +24,13 @@ body {
   padding-top: 50px;
 }
 
+.brand-logo {
+  width: 160px;
+  max-width: 80%;
+  height: auto;
+  margin-bottom: 12px;
+}
+
 .site-title {
   font-size: 22px;
   font-weight: 500;
@@ -100,6 +107,11 @@ body {
 
 .chat-form button:hover {
   background: #666666;
+}
+
+.chat-form button:disabled {
+  background: #999999;
+  cursor: not-allowed;
 }
 
 .chat-form button:focus {
